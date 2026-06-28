@@ -177,6 +177,29 @@ def generate_markdown_report() -> str:
 
     return "\n".join(lines)
 
+
+def print_messages_to_terminal(messages: list[dict]):
+    """将发送给 API 的消息列表打印到本地终端，方便调试观察数据流"""
+    print("\n" + "=" * 60)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 📤 发送请求到 DeepSeek")
+    print("=" * 60)
+
+    for i, msg in enumerate(messages):
+        role = msg["role"].upper()
+        content = msg["content"]
+
+        # 文件内容可能很长，截断显示
+        display = content
+        if role == "SYSTEM" and "以下是用户上传的日志" in content:
+            # 只显示提示语 + 前 200 字符
+            preview = content[:200].replace("\n", "\\n")
+            display = f"{preview}... [总长度: {len(content)} 字符]"
+
+        print(f"\n--- [{i+1}] {role} ---")
+        print(display[:500])  # 每条消息最多打印 500 字符
+
+    print(f"\n{'=' * 60}\n")
+
 # ============================================================
 # 左侧边栏 —— 文件上传 & 管理
 # ============================================================
@@ -196,10 +219,8 @@ with st.sidebar:
         passed, content, error_msg = validate_and_read_file(uploaded_file)
 
         if not passed:
-            # 校验失败 → 显示友好错误提示
             st.error(error_msg)
         else:
-            # 校验通过 → 检测是否为新文件（避免重复清空对话）
             is_same_file = (
                 st.session_state.file_name == uploaded_file.name
                 and st.session_state.file_content == content
@@ -252,91 +273,152 @@ with st.sidebar:
     """)
 
 # ============================================================
-# 主页面标题
+# 页面顶部 —— 标签页
 # ============================================================
-st.title("📟 嵌入式 Log 分析助手")
-st.caption("上传日志 → 提问 → AI 结合上下文精准分析 → 导出报告")
-
-if not st.session_state.file_content:
-    st.info("👈 **请先在左侧边栏上传 .txt 或 .log 文件**，然后开始提问。")
-
-st.divider()
+tab_log, tab_about = st.tabs(["📟 日志分析", "ℹ️ 关于工具"])
 
 # ============================================================
-# 渲染历史对话
+# 标签页 1：日志分析（核心功能）
 # ============================================================
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+with tab_log:
+    st.title("📟 嵌入式 Log 分析助手")
+    st.caption("上传日志 → 提问 → AI 结合上下文精准分析 → 导出报告")
 
-# ============================================================
-# 导出报告按钮（有对话内容时才显示）
-# ============================================================
-has_assistant_reply = any(m["role"] == "assistant" for m in st.session_state.messages)
+    if not st.session_state.file_content:
+        st.info("👈 **请先在左侧边栏上传 .txt 或 .log 文件**，然后开始提问。")
 
-if has_assistant_reply:
     st.divider()
 
-    report_md = generate_markdown_report()
+    # --- 渲染历史对话 ---
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-    col1, col2, col3 = st.columns([1, 1, 3])
-    with col1:
-        st.download_button(
-            label="📥 导出 Markdown",
-            data=report_md,
-            file_name=f"log_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
-            mime="text/markdown",
-            use_container_width=True,
-        )
-    with col2:
-        # 也提供一个纯文本版本（去掉 Markdown 标记的简化版）
-        report_txt = report_md.replace("# ", "").replace("**", "").replace("`", "").replace("---", "---")
-        st.download_button(
-            label="📄 导出纯文本",
-            data=report_md,
-            file_name=f"log_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
+    # --- 导出报告按钮（有对话内容时才显示） ---
+    has_assistant_reply = any(
+        m["role"] == "assistant" for m in st.session_state.messages
+    )
 
-# ============================================================
-# 用户输入框
-# ============================================================
-if prompt := st.chat_input(
-    "输入你的问题（如：分析这段日志里的死机原因）..."
-):
-    # --- 步骤 1：记录并显示用户消息 ---
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    if has_assistant_reply:
+        st.divider()
 
-    # --- 步骤 2：流式调用 DeepSeek ---
-    with st.chat_message("assistant"):
-        placeholder = st.empty()
-        full_response = ""
+        report_md = generate_markdown_report()
 
-        try:
-            stream = client.chat.completions.create(
-                model="deepseek-chat",
-                messages=build_api_messages(),
-                temperature=0.7,
-                max_tokens=2000,
-                stream=True,
+        col1, col2, col3 = st.columns([1, 1, 3])
+        with col1:
+            st.download_button(
+                label="📥 导出 Markdown",
+                data=report_md,
+                file_name=f"log_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        with col2:
+            st.download_button(
+                label="📄 导出纯文本",
+                data=report_md,
+                file_name=f"log_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain",
+                use_container_width=True,
             )
 
-            for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    full_response += chunk.choices[0].delta.content
-                    placeholder.markdown(full_response + "▌")
+    # --- 用户输入框 ---
+    if prompt := st.chat_input(
+        "输入你的问题（如：分析这段日志里的死机原因）..."
+    ):
+        # --- 步骤 1：记录并显示用户消息 ---
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-            placeholder.markdown(full_response)
+        # --- 步骤 2：流式调用 DeepSeek ---
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+            full_response = ""
 
-        except Exception as e:
-            placeholder.error(f"❌ API 调用失败：{e}")
-            full_response = f"*[错误] 请求失败：{e}*"
+            try:
+                # 🔍 将完整请求消息打印到终端，方便调试
+                api_messages = build_api_messages()
+                print_messages_to_terminal(api_messages)
 
-    # --- 步骤 3：存入历史 ---
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+                stream = client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=api_messages,
+                    temperature=0.7,
+                    max_tokens=2000,
+                    stream=True,
+                )
 
-    # 新对话产生后自动刷新，让导出按钮出现
-    st.rerun()
+                for chunk in stream:
+                    if chunk.choices[0].delta.content:
+                        full_response += chunk.choices[0].delta.content
+                        placeholder.markdown(full_response + "▌")
+
+                placeholder.markdown(full_response)
+
+            except Exception as e:
+                placeholder.error(f"❌ API 调用失败：{e}")
+                full_response = f"*[错误] 请求失败：{e}*"
+
+        # --- 步骤 3：存入历史 ---
+        st.session_state.messages.append(
+            {"role": "assistant", "content": full_response}
+        )
+
+        # 新对话产生后自动刷新
+        st.rerun()
+
+# ============================================================
+# 标签页 2：关于工具（个人介绍）
+# ============================================================
+with tab_about:
+    st.title("ℹ️ 关于工具")
+
+    # --- 工具简介 ---
+    st.markdown("""
+    ## 🛠️ 嵌入式 Log 智能分析助手
+
+    本工具诞生于一个朴素的想法：**嵌入式工程师不应该在茫茫日志里人肉搜索**。
+
+    把死机 dump、寄存器快照、驱动 log 扔进来，大模型帮你：
+    - 🔍 快速定位异常点
+    - 📖 翻译晦涩的寄存器含义
+    - 💡 推断可能的死机原因
+    - 📝 一键导出分析报告
+
+    ---
+
+    ## 👨‍💻 关于我
+
+    > **5 年嵌入式老兵，正在探索 AI 全栈开发。**
+
+    写过 BSP，调过驱动，追过死机，改过 Linux 内核。
+    2026 年开始用 AI 工具武装嵌入式研发流程 ——
+    从命令行脚本到 Streamlit 网页，从单轮问答到上下文分析，
+    一步步把想法变成能跑的产品。
+
+    这个项目是我 **AI + 嵌入式** 跨界尝试的起点。
+
+    ---
+
+    ## 🔧 技术栈
+
+    | 层级 | 技术 |
+    |------|------|
+    | 前端 | Streamlit (纯 Python) |
+    | 大模型 | DeepSeek-Chat (OpenAI 兼容) |
+    | SDK | OpenAI Python SDK |
+    | 部署 | 本地 `streamlit run` |
+
+    ---
+
+    ## 📬 联系与反馈
+
+    如果这个工具帮到了你，或者有 Bug / 新需求，
+    欢迎提 Issue 或 PR 👇
+
+    **仓库地址**：`https://github.com/yourname/log-analyzer`
+    """)
+
+    st.divider()
+    st.caption("Built with ❤️ + Streamlit + DeepSeek | 2026")
